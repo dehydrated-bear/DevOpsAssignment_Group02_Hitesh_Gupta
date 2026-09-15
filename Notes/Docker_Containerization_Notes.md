@@ -366,3 +366,115 @@ docker image prune
 docker container prune
 docker system prune -a
 ```
+
+---
+
+## 9. docker-compose for Multi-Container Setups
+
+A real application is rarely a single container. A typical stack has a
+frontend, an API, a database, and a cache. `docker-compose.yml` lets you
+declare the whole stack in one file and run it with one command.
+
+### Basic compose file
+
+```yaml
+version: "3.8"
+
+services:
+  web:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=app
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=appdb
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+volumes:
+  db-data:
+```
+
+### Common compose commands
+
+```bash
+docker compose up -d          # start the stack in the background
+docker compose build          # build all images
+docker compose down           # stop and remove containers
+docker compose down -v        # also remove volumes
+docker compose ps             # list services
+docker compose logs -f web    # follow logs of a service
+docker compose exec web sh    # open a shell in a service
+```
+
+### Why `depends_on` is not enough
+
+`depends_on` only controls the start order, not readiness. Modern Postgres can
+still be initializing when the app connects. Real readiness checks need custom
+logic or health checks (see section 16).
+
+---
+
+## 10. Docker Networks
+
+Containers on the same network can talk to each other by service name.
+Networks provide both **isolation** and **connectivity**.
+
+```bash
+docker network create my-net
+docker run -d --network my-net --name api my-api
+docker run -d --network my-net --name web -p 80:80 my-web
+```
+
+Inside the `my-net` network, `web` can reach `api` simply by using the hostname
+`api`, regardless of any IP address.
+
+### Default bridge in older workflows
+
+In the default bridge network, containers reach each other by IP, which is
+unpredictable. User-defined networks add DNS resolution by container name,
+which is why they are preferred.
+
+---
+
+## 11. Docker Volumes and Persistent Data
+
+Containers are ephemeral. Anything written to a container's filesystem is
+lost when the container is removed. Volumes persist data across container
+lifecycles.
+
+### Three options for persistence
+
+| Option       | Description                                              |
+| ------------ | -------------------------------------------------------- |
+| **Volume**   | Stored in Docker-managed storage, the recommended way.   |
+| **Bind mount** | A host directory mapped into the container.           |
+| **tmpfs**    | Stored in memory only, lost on restart.                  |
+
+```bash
+# named volume
+docker run -v mydata:/app/data my-app
+
+# bind mount (host path)
+docker run -v /host/path:/app/data my-app
+
+# named volume in compose
+#   volumes:
+#     - "./local-dir:/app/data"
+```
+
+### Why use volumes
+
+- Databases need data to survive container restarts.
+- Logs can be collected outside the container.
+- Host files can be shared into the container for development.
+
+---
