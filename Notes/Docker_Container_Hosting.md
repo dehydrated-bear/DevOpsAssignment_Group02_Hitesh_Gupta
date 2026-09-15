@@ -443,3 +443,155 @@ design focuses on small size, caching, and multi-stage builds. Once built,
 images are tagged, pushed to registries, and later pulled to hosts where they
 become running containers. Storage and networking for those containers is
 covered in the next section.
+
+---
+
+## 4. Volumes, Networking & Data Persistence
+
+### 4.1 The Container Filesystem Problem
+
+- Every container starts from the image's read-only layers plus a thin writable
+  layer.
+- If the container is deleted, everything written to that writable layer is
+  lost.
+- Containers should be treated as ephemeral: it should be safe to delete and
+  recreate them at any time.
+- Therefore data that must survive must be stored in a place outside the
+  container's writable layer.
+
+### 4.2 Types of Persistent Storage
+
+1. **Volumes**: Managed by Docker, stored under `/var/lib/docker/volumes`.
+2. **Bind mounts**: Map a host directory directly into the container.
+3. **tmpfs mounts**: In-memory storage, fast but lost on container stop.
+4. **Named pipes / host files**: Windows-specific mapping mechanisms.
+
+### 4.3 Docker Volumes
+
+- Volumes are the recommended way to persist data.
+- They are managed with `docker volume` commands.
+- Create and use a named volume:
+
+```bash
+docker volume create appdata
+docker run -d -v appdata:/var/lib/mysql mysql:8
+```
+
+- Docker will also auto-create an anonymous volume if the image declares a
+  VOLUME instruction.
+- Backing up a volume: `docker run --rm -v appdata:/data -v $(pwd):/backup alpine tar czf /backup/appdata.tar.gz -C /data .`
+- Restore a volume by extracting the archive into a fresh volume.
+
+### 4.4 Bind Mounts
+
+- Bind mounts map any host directory into the container.
+- Useful during development for live code reload.
+- Syntax: `-v /host/path:/container/path`
+- Modern preferred syntax: `--mount type=bind,source=/host,target=/container`
+
+```bash
+docker run -d -p 8080:80 -v "$(pwd)"/html:/usr/share/nginx/html nginx
+```
+
+- Bind mounts do not copy data; the container sees the host files directly.
+- Paths are resolved from the host, so permissions of host files apply.
+
+### 4.5 tmpfs Mounts
+
+- Store sensitive or transient data in host memory.
+- Syntax: `--mount type=tmpfs,target=/cache`
+- Data is never written to disk and disappears when the container stops.
+- Good for scratch space, session caches, and secrets that must not persist.
+
+### 4.6 Copy-on-Write and Layer Storage
+
+- If a file is written to a container path that is inside a lower image layer,
+  Docker copies the file up into the writable layer first (copy-on-write).
+- This keeps the base image layer immutable and shared between containers.
+- High write volumes become problematic because of copy-on-write overhead —
+  another reason databases should use volumes.
+
+### 4.7 Docker Networking Overview
+
+- Every container gets its own network namespace with a virtual IP address.
+- The default bridge network gives containers an IP on `172.17.0.0/16`.
+- Containers communicate with each other via names on user-defined networks.
+- The host can reach containers through published ports.
+
+### 4.8 Network Drivers
+
+| Driver        | Purpose                                                    |
+|---------------|------------------------------------------------------------|
+| bridge        | Default private network for containers on the same host   |
+| host          | Container shares the host network stack directly          |
+| none          | No networking at all                                       |
+| overlay       | Multi-host networking for Swarm/Kubernetes                 |
+| macvlan       | Assign containers real MAC addresses on the host LAN       |
+| ipvlan        | Assign containers real IPs on the host LAN without MACs   |
+
+### 4.9 Creating and Using Custom Bridge Networks
+
+```bash
+docker network create app-net
+docker run -d --name db --network app-net mysql:8
+docker run -d --name web --network app-net -p 8080:80 nginx
+```
+
+- On `app-net`, the `web` container can reach `db` by the DNS name `db`.
+- The default bridge does NOT provide automatic DNS between containers, so
+  custom networks are preferred.
+- Networks can be isolated: put frontend and backend on separate networks and
+  only attach network bridges where needed.
+
+### 4.10 Port Publishing
+
+- Publish a port with `-p hostPort:containerPort`.
+- Example: `-p 8080:80` means host port 8080 maps to container port 80.
+- Multiple mappings are allowed: `-p 8080:80 -p 8443:443`
+- Random host port: `-P` publishes all EXPOSEd ports to random ports; check with
+  `docker port <container>`.
+- The host firewall (iptables/ufw) still applies on top of Docker's port rules.
+
+### 4.11 Persisting Databases with Volumes
+
+- Databases must never rely on container layers for data.
+- Example for MySQL:
+
+```bash
+docker volume create mysql-data
+docker run -d \
+  --name mysql \
+  -e MYSQL_ROOT_PASSWORD=secret \
+  -v mysql-data:/var/lib/mysql \
+  -p 3306:3306 \
+  mysql:8
+```
+
+- Backing up and restoring become simple volume operations.
+
+### 4.12 Storage Drivers
+
+| Driver   | Notes                                       |
+|----------|---------------------------------------------|
+| overlay2 | Default, efficient, recommended on Linux    |
+| fuse-overlayfs | Works without extended attributes (rootless) |
+| vfs      | Copies whole layers, slow, not recommended  |
+| zfs/btrfs| Native filesystem snapshots, copy-on-write |
+
+- Storage driver is chosen at daemon start and set in `daemon.json`.
+- Do not switch storage drivers on a live host with existing containers.
+
+### 4.13 Rootless Docker
+
+- Rootless mode runs the daemon and containers without root privileges.
+- Storage problems: overlay2 needs fuse-overlayfs or vfs in rootless mode.
+- Networking is restricted; userland proxy with slirp4netns is used by default.
+- Useful on shared machines where the operator is not allowed root access.
+
+### 4.14 Summary
+
+Container filesystems are ephemeral, so persistent data belongs in volumes or
+bind mounts. Networking starts from the simple default bridge but real
+applications need custom networks with DNS, port publishing to the host, and
+overlay networks when scaling to many hosts. With storage and networking
+understood, multi-container applications and Compose become straightforward.
