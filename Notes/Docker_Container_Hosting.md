@@ -1008,3 +1008,218 @@ Either way, the application keeps being packaged as Docker images; only the
 orchestration layer above the containers changes. The final section covers CI/CD,
 security, monitoring, and the best practices that make all of this production
 ready.
+
+---
+
+## 7. CI/CD, Security, Monitoring & Best Practices
+
+### 7.1 Container CI/CD Pipeline
+
+A typical pipeline with containers has these stages:
+
+1. Build the artifact and run linters/tests.
+2. Build the Docker image with a unique tag (commit SHA).
+3. Scan the image for vulnerabilities.
+4. Push the image to a registry.
+5. Deploy by updating the target host, Swarm service, or Kubernetes Deployment.
+6. Run smoke tests against the deployed environment.
+7. On success, promote or keep the deployment; on failure, roll back.
+
+### 7.2 CI/CD with GitHub Actions
+
+```yaml
+name: build-and-push
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.REGISTRY }}/myapp:${{ github.sha }}
+            ${{ secrets.REGISTRY }}/myapp:latest
+```
+
+- Similar flows exist for GitLab CI, Jenkins, CircleCI, and Azure Pipelines.
+- Deployment typically runs `docker pull` and `docker compose up -d` on the
+  target server, or updates the Kubernetes manifest via `kubectl set image`.
+
+### 7.3 Zero-Downtime Deployment Patterns
+
+- **Rolling update (Swarm)**: increase replicas and update one at a time with
+  parallelism and delay.
+- **Blue/green**: run the new version next to the old, then switch the load
+  balancer when the new version is healthy.
+- **Canary**: route a small percentage of traffic to the new version, growing it
+  gradually.
+- **Rollback**: keep the previous image tag available so it can be re-served
+  immediately.
+
+### 7.4 Docker Security Fundamentals
+
+- Run containers as a non-root user: `USER appuser` in the Dockerfile.
+- Use read-only root filesystems where possible: `--read-only`.
+- Drop unnecessary capabilities: `--cap-drop ALL --cap-add NET_BIND_SERVICE`.
+- Never run with `--privileged` unless truly required.
+- Use seccomp and AppArmor profiles.
+- Scan images with Trivy, Grype, Snyk, or Anchore before pushing.
+- Use slim/distroless bases to reduce the attack surface.
+
+### 7.5 Secrets Management
+
+- Do not bake secrets into images: they end up in image layers and history.
+- Use Swarm secrets or Kubernetes Secrets for config.
+- Use external vaults (HashiCorp Vault, AWS Secrets Manager, Azure Key Vault)
+  for dynamic secrets.
+- Set environment variables at runtime via Compose `env_file` or mounts.
+- Rotate secrets regularly and audit who can read them.
+
+### 7.6 Dockerfile Security Hardening
+
+```dockerfile
+FROM alpine:latest
+RUN apk add --no-cache curl
+COPY --chown=1000:1000 app /app
+USER 1000
+HEALTHCHECK --interval=30s CMD curl -f http://localhost:8080/health || exit 1
+```
+
+- `COPY --chown` fixes file ownership to a non-root user.
+- `USER 1000` avoids running as root.
+- HEALTHCHECK gives orchestrators a way to judge readiness.
+- Use `--no-cache` for package managers so nothing caches credentials.
+
+### 7.7 Logging and Observability
+
+- Send logs to stdout/stderr so `docker logs` and logging drivers capture them.
+- Log drivers: `json-file`, `syslog`, `journald`, `awslogs`, `gelf`, `fluentd`.
+- Centralise logs with Loki/Elasticsearch + Grafana/Kibana.
+- Forward via agents such as Fluent Bit, Vector, or the Promtail.
+- Metrics: cAdvisor, Prometheus exporters, Google cAdvisor.
+- Traces: OpenTelemetry, Jaeger, Zipkin.
+
+### 7.8 Resource Limits and Quotas
+
+```bash
+docker run -d --memory="512m" --cpus="0.5" nginx
+# Compose:
+# deploy:
+#   resources:
+#     limits:
+#       memory: 512M
+#       cpus: "0.5"
+```
+
+- Limits prevent a runaway container from hurting neighbours.
+- `--pids-limit`, `--io-maxio`, and network bandwidth options add more control.
+- In Kubernetes set `requests` and `limits` in the Pod spec.
+
+### 7.9 Health Checks and Self-Healing
+
+- HEALTHCHECK in Dockerfile, or `--health-cmd` at runtime.
+- Compose: `healthcheck:` per service.
+- Swarm reconstitutes failed tasks.
+- Kubernetes liveness/readiness/startup probes restart and gate Pods.
+- Always provide a `/health` endpoint from applications.
+
+### 7.10 Backups and Disaster Recovery
+
+- Back up volumes with `tar` archives.
+- Schedule automated dumps for databases (`pg_dump`, `mysqldump`).
+- Push images to a registry as the source of truth.
+- Recreate any host from a fresh install plus `docker compose up -d`.
+- Test restore procedure on a clean machine at least twice a year.
+
+### 7.11 Update and Upgrade Strategies
+
+- Pin image versions and test upgrading in a staging environment first.
+- Use `docker compose pull && docker compose up -d` to update a stack.
+- In Swarm, `docker service update --image` for rolling updates.
+- In Kubernetes, `kubectl set image deployment/web web=nginx:1.27`.
+- Keep the daemon itself updated: `sudo apt upgrade docker-ce`.
+
+### 7.12 Common Commands Cheat Sheet
+
+```bash
+docker ps                       # running containers
+docker ps -a                    # all containers
+docker logs -f <name>           # follow logs
+docker exec -it <name> bash     # enter a container
+docker stats                    # live resource usage
+docker top <name>               # processes in container
+docker inspect <name>           # full metadata
+docker network ls               # list networks
+docker volume ls                # list volumes
+docker system df                # disk usage breakdown
+docker system prune -a          # clean everything unused
+docker events                   # stream daemon events
+```
+
+### 7.13 Troubleshooting Common Problems
+
+**Container exits immediately**
+- Check logs with `docker logs <name>`.
+- Verify the entrypoint/command actually keeps running in the foreground.
+
+**Port already in use**
+- `sudo netstat -tulpn | grep <port>` to find the conflicting process.
+- Change the published host port.
+
+**Container has no network**
+- Check the network driver and whether it is attached: `docker network inspect`.
+- Restart the container and inspect with `docker events`.
+
+**Slow performance**
+- Check `docker stats` for CPU/memory contention.
+- Look at storage driver and log volume.
+
+**Out of disk space**
+- `docker system df` to see what is big.
+- Prune build cache, unused images, and stopped containers.
+
+**Image pull denied or not found**
+- Check the tag spelling and registry login status.
+- Verify the image exists in the registry on the correct architecture.
+
+### 7.14 Best Practices Checklist
+
+- Use specific version tags, never floating `latest` in production.
+- Keep images small with multi-stage builds and alpine/distroless bases.
+- Run as non-root with minimal capabilities.
+- Persist data only through volumes.
+- Put every service behind health checks.
+- Push builds from CI only, using signed and scanned images.
+- Enforce code review on Dockerfiles and Compose files.
+- Track every change in git (images are code).
+- Limit resources per container.
+- Centralise logs and alert on health failures.
+- Document the deployment runbook for each application.
+
+### 7.15 Running Docker in Production Responsibly
+
+- Use at least two hosts plus a load balancer for real uptime.
+- Spread replicas across availability zones when using cloud providers.
+- Automate provisioning with Ansible, Terraform, or Pulumi.
+- Apply immutable infrastructure: never shell into hosts to fix things by hand.
+- Schedule regular image, daemon, and host security updates.
+
+### 7.16 Final Words
+
+Docker container hosting turns application delivery into a repeatable,
+mechanised process. From a Dockerfile and a Compose file, an entire stack can be
+deployed on a laptop, a single VM, or a multi-hundred-node Kubernetes cluster.
+The same principles apply everywhere: immutable images, named volumes, isolated
+networks, health checks, resource limits, and continuous, verifiable releases.
+Combined with CI/CD, security scanning, monitoring, and clean rollback
+strategies, containers become one of the most reliable ways to host software.
