@@ -595,3 +595,196 @@ bind mounts. Networking starts from the simple default bridge but real
 applications need custom networks with DNS, port publishing to the host, and
 overlay networks when scaling to many hosts. With storage and networking
 understood, multi-container applications and Compose become straightforward.
+
+---
+
+## 5. Docker Compose & Multi-Container Hosting
+
+### 5.1 Why Multi-Container Hosting?
+
+- Modern applications are rarely a single process.
+- A typical web stack has: reverse proxy, frontend, backend API, database,
+  cache, message queue, and background workers.
+- Each part has different scaling needs, update cycles, and resource usage.
+- Running each part as its own container improves isolation, observability, and
+  independent deployment.
+
+### 5.2 Introducing Docker Compose
+
+- Compose is a CLI tool that defines and runs multi-container apps from a YAML
+  file, normally called `compose.yaml` (or `docker-compose.yml`).
+- One command (up) creates all networks, volumes, and containers described.
+- Compose is ideal for development environments and small production stacks.
+- The modern command prefix is `docker compose`; the old standalone binary is
+  `docker-compose`.
+
+### 5.3 A Full Compose Example
+
+A simple web app with an API and a database:
+
+```yaml
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 10s
+      retries: 5
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://app:secret@db/app
+    ports:
+      - "8080:8080"
+
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+    ports:
+      - "80:80"
+
+volumes:
+  pgdata:
+```
+
+### 5.4 Service Names as DNS
+
+- Each service name in `compose.yaml` becomes a DNS name on the Compose network.
+- The backend reaches the database at hostname `db`, port `5432`.
+- No hard-coded IP addresses are needed anywhere.
+
+### 5.5 Environment and Configuration
+
+```yaml
+services:
+  app:
+    image: myapp:1.0
+    environment:
+      APP_MODE: production
+      SECRET_TOKEN: ${SECRET_TOKEN}
+    env_file:
+      - .env
+```
+
+- `environment` sets variables directly.
+- `env_file` loads variables from a file.
+- `${VAR}` resolves from the shell or a project `.env` file at runtime.
+- Secrets should be supplied via files or Swarm secrets, never committed to git.
+
+### 5.6 Networking in Compose
+
+- Compose auto-creates a project bridge network.
+- `ports` publishes ports on the host.
+- `expose` only makes ports available to linked services.
+- Custom networks can separate tiers:
+
+```yaml
+services:
+  db:
+    networks: [internal]
+  backend:
+    networks: [internal, public]
+  web:
+    networks: [public]
+networks:
+  internal:
+    internal: true
+  public: {}
+```
+
+- Marking a network `internal: true` blocks external access to it.
+
+### 5.7 Volumes and Dependencies in Compose
+
+- Named volumes are declared once and shared via `volumes:` key.
+- `depends_on` controls start order and can wait for health.
+- `restart` policies: `no`, `always`, `on-failure`, `unless-stopped`.
+- `healthcheck` makes readiness explicit and lets other services wait.
+
+### 5.8 Common Compose Commands
+
+```bash
+docker compose up -d                  # start services in background
+docker compose up --build             # rebuild before start
+docker compose down                   # stop and remove containers/network
+docker compose down -v                # also remove named volumes
+docker compose ps                     # list service status
+docker compose logs -f                # follow logs of all services
+docker compose logs backend           # logs of one service
+docker compose exec backend bash      # shell inside a container
+docker compose restart backend        # restart one service
+docker compose scale workers=3        # set replica count (V2)
+docker compose config                 # render final merged config
+docker compose pull                   # pull all images
+```
+
+### 5.9 Difference Between Compose and Swarm
+
+- Compose: single-host or dev-focused, easy, no cluster/load balancing.
+- Swarm: multi-host orchestration, built into the engine, supports secrets and
+  overlay networks.
+- Swarm can consume the same YAML if you add `deploy` sections.
+- For large clusters Kubernetes is usually a better fit.
+
+### 5.10 Running Production Stacks with Compose
+
+- Use immutable image tags from CI, not `latest`.
+- Pin major versions of images.
+- Set memory and CPU limits per service:
+  `deploy: resources: limits: memory: 512M`
+- Restart policy `unless-stopped` or the Swarm `deploy.replicas` for control.
+- Route traffic with a dedicated reverse proxy service.
+- Centralise logs by shipping files to a collector.
+
+### 5.11 Building Images in Compose
+
+```yaml
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile.prod
+      args:
+        BUILD_ENV: production
+```
+
+- `build` replaces `image` for local builds.
+- If both are present, Compose builds and tags the image.
+- `args` passes build-time variables used by `ARG` in the Dockerfile.
+
+### 5.12 Compose Profiles
+
+- Profiles enable optional services that only start when selected.
+- Example: add `profiles: ["debug"]` to a service.
+- Start it with `docker compose --profile debug up -d`.
+
+### 5.13 Compose in CI vs Production
+
+- In CI, Compose spins up throwaway environments for tests.
+- In production, Compose is used on single VMs or small servers.
+- On large fleets the same YAML can drive Swarm or be converted to Kubernetes
+  manifests with tools like Kompose.
+
+### 5.14 Summary
+
+Compose takes the pain out of multi-container hosting. A single YAML describes
+networks, volumes, services, dependencies, and health checks. Everything is
+repeatable and version-controlled. When one host is no longer enough,
+orchestration tools such as Swarm and Kubernetes, covered next, take over.
