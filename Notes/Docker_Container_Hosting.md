@@ -267,3 +267,179 @@ Docker is a client-server platform built on Linux kernel isolation features.
 Installing Docker is straightforward on every major operating system. After
 installation the daemon runs constantly, and the CLI is used to talk to it. This
 foundation supports all the image building and hosting workflows covered next.
+
+---
+
+## 3. Docker Images, Dockerfile & Building Images
+
+### 3.1 What is a Docker Image?
+
+- An image is a read-only, layered snapshot of a filesystem plus metadata.
+- Images are built from instructions in a file called `Dockerfile`.
+- Every line in a Dockerfile that modifies the filesystem creates a new layer.
+- Layers are cached, so rebuilding an image only re-runs the steps that changed.
+- Images are identified by `repository:tag`, for example `nginx:1.27`.
+- The special tag `latest` points to the most recently pushed "latest" build.
+
+### 3.2 Image Layers Explained
+
+- A Dockerfile instruction such as `RUN`, `COPY`, or `ADD` adds a layer.
+- Layers are stacked, and the container sees a single merged filesystem.
+- Because layers are cached, sharing a base image across many images uses disk
+  storage only once.
+- `docker image history <image>` shows each layer with its size and command.
+- `overlay2` is the default storage driver on modern Linux hosts and implements
+  copy-on-write so unchanged files are never duplicated.
+
+### 3.3 A Minimal Dockerfile
+
+```dockerfile
+FROM nginx:alpine
+COPY index.html /usr/share/nginx/html/
+EXPOSE 80
+```
+
+- `FROM` sets the base image.
+- `COPY` copies local files into the image.
+- `EXPOSE` documents which port the container listens on.
+- Build with `docker build -t my-site .`
+
+### 3.4 Common Dockerfile Instructions
+
+| Instruction   | Purpose                                                |
+|---------------|--------------------------------------------------------|
+| FROM          | Base image to build on                                 |
+| RUN           | Execute a command while building the image             |
+| COPY          | Copy files from the build context into the image       |
+| ADD           | Like COPY, plus tarball auto-extraction and URLs       |
+| WORKDIR       | Set the working directory for RUN/CMD/COPY/ENTRYPOINT  |
+| ENV           | Set environment variables for the image/container      |
+| ARG           | Build-time variable usable only during the build       |
+| EXPOSE        | Declare which ports the container listens on           |
+| CMD           | Default command run at container start (can override)  |
+| ENTRYPOINT    | Main command that is hard to override (containerized)  |
+| USER          | Switch to a non-root user for runtime                  |
+| VOLUME        | Declare a mount point for persistent data              |
+| LABEL         | Add metadata such as maintainer or version             |
+| HEALTHCHECK   | Define a command to check container health             |
+| STOPSIGNAL    | The signal sent to stop the container                  |
+| ONBUILD       | Trigger instructions when used as a base image         |
+
+### 3.5 ENTRYPOINT vs CMD
+
+- `CMD` provides defaults that can be overridden by `docker run myimage arg`.
+- `ENTRYPOINT` is the executable that always runs.
+- Combined: ENTRYPOINT supplies the binary, CMD supplies default arguments.
+- JSON array form is preferred: `CMD ["nginx", "-g", "daemon off;"]`
+- Shell form runs through a shell: `CMD nginx -g "daemon off;"`
+- When both are given in shell form, only ENTRYPOINT runs and CMD is ignored.
+
+### 3.6 Building an Image
+
+```bash
+docker build -t app:1.0 .
+docker build -t app:1.0 -f alt/Dockerfile.prod .
+docker build --build-arg VERSION=2.0 -t app:2.0 .
+```
+
+- The final ` .` is the **build context** — the set of files Docker can COPY.
+- `.dockerignore` excludes files from the context (node_modules, .git, secrets).
+- `--target service` builds only a named stage in a multi-stage build.
+
+### 3.7 Multi-Stage Builds
+
+- Multi-stage builds use multiple `FROM` statements to keep final images small.
+- The pattern: one stage installs the full toolchain, a later stage copies only
+  the compiled artifacts into a slim runtime image.
+
+```dockerfile
+# ---- build stage ----
+FROM golang:1.22 AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o server .
+
+# ---- runtime stage ----
+FROM alpine:latest
+RUN adduser -D appuser
+COPY --from=builder /app/server /usr/local/bin/server
+USER appuser
+EXPOSE 8080
+CMD ["server"]
+```
+
+- Results in a final image that contains only the binary and a base OS.
+- This reduces image size by hundreds of megabytes for many languages.
+
+### 3.8 Image Size Optimisation
+
+- Prefer small bases: `alpine`, `distroless`, or `slim` variants.
+- Combine RUN commands and clean package caches in the same layer:
+  `RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*`
+- Use `.dockerignore` to avoid copying build caches.
+- Use multi-stage builds to avoid shipping compilers.
+- Use `docker image inspect` and tools like `dive` to view layer contents.
+- Avoid storing secrets in layers: secrets become visible in image history.
+
+### 3.9 Tagging and Versioning Images
+
+```bash
+docker tag app:1.0 registry.example.com/myteam/app:1.0
+docker tag app:1.0 registry.example.com/myteam/app:latest
+docker push registry.example.com/myteam/app:1.0
+```
+
+- Semantic versioning (`1.2.3`) plus major-only tags (`1`) are common patterns.
+- An immutable unique ID may be generated in CI and used as the tag.
+- Never reuse an existing tag for a different build unless you are fine with
+  breaking reproducibility.
+
+### 3.10 Registries and Pulling Images
+
+```bash
+docker pull nginx:alpine          # from Docker Hub
+docker pull registry.example.com/app:1.0
+docker login registry.example.com # authenticate
+docker search nginx               # search Docker Hub
+```
+
+- Public registries: Docker Hub, GitHub Container Registry (ghcr.io).
+- Cloud registries: AWS ECR, Azure Container Registry (ACR), Google Artifact
+  Registry, JFrog Artifactory, Quay.io.
+- Private registries can be self-hosted using the open-source `registry` image:
+  `docker run -d -p 5000:5000 registry:2`.
+
+### 3.11 Inspecting and exporting images
+
+```bash
+docker image ls                 # list local images
+docker image inspect nginx      # metadata in JSON
+docker image history nginx      # layer history
+docker image save -o app.tar app:1.0   # export to tarball
+docker image load -i app.tar    # import a tarball
+docker image rm app:1.0         # delete an image
+docker image prune -a           # remove all unused images
+```
+
+### 3.12 Running Containers from Images
+
+```bash
+docker run -d --name web -p 8080:80 nginx
+docker run -it ubuntu bash
+docker run --rm -v /host/data:/data alpine ls /data
+```
+
+- `-d` runs detached, `-it` gives an interactive terminal session.
+- `--rm` auto-deletes the container when it exits.
+- `-p` publishes a host port to a container port.
+- `-v` mounts a host folder or volume into the container.
+
+### 3.13 Summary
+
+Images are layered, read-only templates created from a Dockerfile. Good image
+design focuses on small size, caching, and multi-stage builds. Once built,
+images are tagged, pushed to registries, and later pulled to hosts where they
+become running containers. Storage and networking for those containers is
+covered in the next section.
