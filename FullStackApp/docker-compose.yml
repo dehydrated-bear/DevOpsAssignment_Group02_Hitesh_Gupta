@@ -1,0 +1,56 @@
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: taskmanager_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - tasknet
+
+  backend:
+    build:
+      context: ./backend
+    container_name: taskmanager_backend
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGO_URI: mongodb://mongo:27017/taskmanager
+      JWT_SECRET: ${JWT_SECRET:-change_this_secret_in_production}
+      JWT_EXPIRES_IN: 7d
+      CLIENT_ORIGIN: http://localhost
+      RATE_LIMIT_WINDOW_MS: 900000
+      RATE_LIMIT_MAX: 100
+    ports:
+      - "5000:5000"
+    networks:
+      - tasknet
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: taskmanager_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - tasknet
+
+volumes:
+  mongo_data:
+
+networks:
+  tasknet:
+    driver: bridge
