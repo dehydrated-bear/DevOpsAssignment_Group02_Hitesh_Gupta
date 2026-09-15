@@ -788,3 +788,223 @@ Compose takes the pain out of multi-container hosting. A single YAML describes
 networks, volumes, services, dependencies, and health checks. Everything is
 repeatable and version-controlled. When one host is no longer enough,
 orchestration tools such as Swarm and Kubernetes, covered next, take over.
+
+---
+
+## 6. Orchestration: Docker Swarm & Kubernetes
+
+### 6.1 Why Orchestration?
+
+- Single hosts have limits on CPU, memory, disk, and resilience.
+- Production hosting needs multiple hosts: if one fails, others keep the service
+  alive.
+- Orchestrators automate the placement, scaling, networking, and healing of
+  containers across a cluster of machines.
+- Both Swarm and Kubernetes provide: service discovery, load balancing,
+  rolling updates, health checks, and self-healing.
+
+### 6.2 Docker Swarm Overview
+
+- Swarm mode is built into the Docker Engine since v1.12.
+- A Swarm consists of **manager** nodes and **worker** nodes.
+- Managers keep state, schedule services, and provide the control plane.
+- Workers run the actual service tasks.
+- Communication between nodes is encrypted via TLS, and raft consensus keeps
+  state consistent among managers.
+
+### 6.3 Swarm Object Model
+
+| Concept      | Description                                         |
+|--------------|-----------------------------------------------------|
+| Node         | A machine joined to the cluster                     |
+| Service      | Definition: image, replicas, ports, networks        |
+| Task         | A running container scheduled for a service         |
+| Stack        | A group of services defined in a Compose-like YAML  |
+| Secret       | Encrypted configuration held by managers            |
+| Config       | Unencrypted configuration object                    |
+
+### 6.4 Initialising and Joining a Swarm
+
+```bash
+docker swarm init --advertise-addr 192.168.1.10
+docker swarm join --token <worker-token> 192.168.1.10:2377
+docker node ls
+```
+
+- `docker swarm join-token manager` prints the manager join command.
+- Managers use port 2377 for control traffic, 7946 for gossip, 4789 for VXLAN
+  overlay traffic.
+
+### 6.5 Deploying a Service in Swarm
+
+```bash
+docker service create --name web --replicas 3 -p 8080:80 nginx:alpine
+docker service ls
+docker service ps web
+docker service scale web=5
+docker service update --image nginx:1.27 web
+docker service rm web
+```
+
+- `docker service update` performs a rolling update without downtime.
+- Swarm automatically spreads replicas across worker nodes.
+- If a task dies, the scheduler replaces it on another node.
+
+### 6.6 Swarm Stacks
+
+- Stacks use Compose syntax with a `deploy` section:
+
+```yaml
+version: "3.8"
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    deploy:
+      replicas: 4
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
+  db:
+    image: mysql:8
+    volumes:
+      - dbdata:/var/lib/mysql
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+volumes:
+  dbdata:
+```
+
+- Deploy a stack with `docker stack deploy -c stack.yml app`.
+- Swarm secrets: `echo "s3cr3t" | docker secret create db_pass -` then mount
+  under `/run/secrets/db_pass` in the container.
+
+### 6.7 Overlay Networks in Swarm
+
+- The `overlay` driver connects containers across many hosts.
+- Created automatically when a stack uses networks.
+- Services get DNS names across the whole cluster.
+- Traffic between containers on the same overlay is encrypted optionally.
+
+### 6.8 Swarm Routing Mesh
+
+- Published ports are available on every node, even nodes that do not run the
+  task.
+- The routing mesh forwards traffic to a node that runs the task.
+- This gives simple load balancing and high availability out of the box.
+
+### 6.9 Kubernetes Overview
+
+- Kubernetes (k8s) is the industry-standard container orchestrator.
+- Originally created by Google, now maintained by the CNCF.
+- Bigger feature set than Swarm: auto-scaling, RBAC, service mesh, ingress,
+  operators, and a huge ecosystem.
+
+### 6.10 Kubernetes Core Concepts
+
+| Concept       | Description                                             |
+|---------------|---------------------------------------------------------|
+| Pod           | Smallest unit: one or more containers sharing a network |
+| Node          | A machine in the cluster (worker)                       |
+| Deployment    | Desired state for a set of Pods (replicas, updates)     |
+| Service       | Stable network endpoint for a set of Pods               |
+| Namespace     | Logical grouping of resources                           |
+| Ingress       | External HTTP(S) routing rules                          |
+| ConfigMap     | Non-secret configuration data                           |
+| Secret        | Encrypted configuration data                            |
+| PersistentVolume | Storage provisioned out of the cluster               |
+| StatefulSet   | Stable identity for stateful workloads                  |
+| DaemonSet     | Runs a Pod on every node                                |
+| HPA           | Horizontal Pod Autoscaler                               |
+
+### 6.11 Pods, Deployments, and Services
+
+- A **Deployment** declares the desired number of replicas and rolls updates.
+- A **Service** selects Pods with labels and exposes a stable ClusterIP.
+- External traffic arrives via **Ingress** or a LoadBalancer service.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 80
+```
+
+### 6.12 Kubernetes Networking and Storage
+
+- Every Pod gets its own IP on the cluster network (CNI: Calico, Flannel,
+  Cilium, Weave).
+- Persistent data uses PVCs backed by storage classes
+  (hostPath, NFS, AWS EBS, Azure Disk, GCE PD, CSI drivers).
+- Sticking to the same data for stateful apps is handled by StatefulSets.
+
+### 6.13 Scaling and Self-Healing
+
+```bash
+kubectl scale deployment web --replicas=5
+kubectl autoscale deployment web --min=2 --max=10 --cpu-percent=70
+kubectl rollout status deployment/web
+kubectl rollout undo deployment/web
+```
+
+- Liveness probes restart unhealthy Pods.
+- Readiness probes stop sending traffic to unready Pods.
+- Startup probes guard slow-starting applications.
+
+### 6.14 Swarm vs Kubernetes: Choosing
+
+| Factor           | Docker Swarm        | Kubernetes              |
+|------------------|---------------------|-------------------------|
+| Setup effort     | Very low            | Moderate to high        |
+| Feature set      | Minimal             | Extensive               |
+| Best for         | Small clusters      | Large dynamic platforms |
+| Auto-scaling     | Manual scale only   | HPA, cluster autoscaler |
+| Ingress          | Routing mesh        | Ingress controllers     |
+| Ecosystem/tools  | Small               | Huge (Helm, operators)  |
+| Learning curve   | Gentle              | Steep                   |
+
+### 6.15 Managed Kubernetes Services
+
+- **AWS EKS**: Amazon Elastic Kubernetes Service, integrates with IAM, EBS, ALB.
+- **Azure AKS**: Azure Kubernetes Service, one-click upgrade and monitoring.
+- **Google GKE**: The most mature managed k8s, automatic node pools.
+- **Rancher / k3s / kind / minikube**: Lightweight or local options.
+
+### 6.16 Summary
+
+When one host is not enough, Swarm adds multi-host scheduling with almost zero
+extra complexity, while Kubernetes provides the full platform-grade feature set.
+Either way, the application keeps being packaged as Docker images; only the
+orchestration layer above the containers changes. The final section covers CI/CD,
+security, monitoring, and the best practices that make all of this production
+ready.
