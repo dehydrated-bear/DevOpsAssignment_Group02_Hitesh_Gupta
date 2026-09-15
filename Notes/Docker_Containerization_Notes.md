@@ -478,3 +478,76 @@ docker run -v /host/path:/app/data my-app
 - Host files can be shared into the container for development.
 
 ---
+
+## 12. Docker Security Best Practices
+
+- **Run as a non-root user.** Unprivileged users limit blast radius if a
+  container is compromised.
+- **Use small, trusted base images** with specific tags, never `latest`.
+- **Never bake secrets into images.** Use environment variables, secrets, or
+  secret managers at run time.
+- **Scan images** with tools like `docker scout` or `trivy` for known CVEs.
+- **Apply least privilege** - drop capabilities, read-only root filesystem.
+- **Pin dependencies** so rebuilds produce identical images.
+
+```bash
+docker scout cves my-app
+docker run --read-only --cap-drop ALL my-app
+```
+
+---
+
+## 13. Troubleshooting and Debugging
+
+The most common container problems and their fixes:
+
+| Symptom                     | Likely cause                         | Fix                                    |
+| --------------------------- | ------------------------------------ | -------------------------------------- |
+| Container exits immediately | CMD is wrong or app crashes on boot  | Check `docker logs`                    |
+| Port not reachable          | Wrong port mapping or firewall       | `-p 3000:3000` and app binds 0.0.0.0   |
+| Slow builds                 | Layer cache invalidated              | Copy manifests before source           |
+| Image too large             | Build tools in runtime image         | Use multi-stage builds                 |
+| Connection refused to db    | Wrong network or readiness           | Same network, use health checks        |
+
+```bash
+docker logs my-app
+docker exec -it my-app sh
+docker inspect my-app
+docker stats
+```
+
+---
+
+## 14. Common Commands Cheat Sheet
+
+```bash
+docker build -t my-app .                 # build an image
+docker run -d -p 3000:3000 my-app        # run a container
+docker ps -a                             # list containers
+docker images                            # list images
+docker stop <id> && docker rm <id>       # stop and remove
+docker logs -f <id>                      # follow logs
+docker exec -it <id> sh                  # shell in container
+docker compose up -d                     # run a compose stack
+docker compose down -v                   # teardown everything
+docker system prune -a                   # clean up disk space
+```
+
+---
+
+## 15. Summary and Checklist
+
+- [ ] Dockerfile starts with a pinned `FROM` base image.
+- [ ] Dependency manifests are copied before the source for caching.
+- [ ] `.dockerignore` excludes secrets, lock files, and build artifacts.
+- [ ] The app runs as a non-root user.
+- [ ] Port is documented with `EXPOSE` and mapped with `-p`.
+- [ ] Environment variables come from env files or compose, not the image.
+- [ ] Data that must survive restarts lives in a volume.
+- [ ] Logs and health checks are configured for the service.
+- [ ] The image builds, runs, and is tested locally before pushing.
+- [ ] Multi-stage builds keep the production image small.
+
+Containerization turns an application into a repeatable, portable, and
+scalable artifact. Master the Dockerfile, compose for your services, volume
+your data, and ship with confidence.
