@@ -123,3 +123,147 @@ an image. Deployment becomes predictable, reproducible, and easy to scale.
 The remainder of these notes go step by step through Docker architecture,
 installation, image building, storage, networking, multi-container apps,
 orchestration, and production best practices.
+
+---
+
+## 2. Docker Architecture & Installation
+
+### 2.1 Docker Platform Components
+
+Docker is not a single program. It is a client-server platform built from
+several components working together:
+
+1. **Docker Daemon (`dockerd`)**: The background server process running on the
+   host. It manages images, containers, networks, and storage volumes.
+2. **Docker Client (`docker`)**: The command line tool a user interacts with. It
+   talks to the daemon over a socket (by default a Unix socket or a
+   TCP endpoint on Windows).
+3. **REST API**: The interface between the client and daemon. Third-party tools
+   can also speak to the daemon over this API.
+4. **Docker Registries**: Remote services that store images. Docker Hub is the
+   default, but private registries are common in enterprises.
+5. **containerd**: The high-level container runtime used by the daemon to
+   execute containers.
+6. **runc**: The low-level runtime that actually spawns containers using Linux
+   kernel namespaces and cgroups.
+
+### 2.2 Client-Server Model
+
+- The Docker CLI on your laptop can control a daemon running on a remote server
+  by setting the `DOCKER_HOST` environment variable.
+- Example: `DOCKER_HOST=tcp://1.2.3.4:2375 docker ps`
+- Docker Desktop on Windows and macOS runs the daemon inside a small Linux VM,
+  because Docker containers require Linux kernel features.
+
+### 2.3 Linux Kernel Technologies Behind Docker
+
+| Technology  | Purpose                                                    |
+|-------------|------------------------------------------------------------|
+| Namespaces  | Isolate processes, filesystems, networking, and users      |
+| cgroups     | Limit and monitor CPU, memory, and I/O per container       |
+| UnionFS     | Layered filesystem used for images (overlay2 is standard)  |
+| Seccomp     | Restrict the system calls a container can make             |
+| Capabilities| Drop or add kernel privileges for a container              |
+| Netfilter   | Enables bridge networking and port mapping via iptables    |
+
+### 2.4 Docker Installation on Linux
+
+On a Debian/Ubuntu host the recommended approach is to use the official Docker
+APT repository.
+
+1. Update packages: `sudo apt update`
+2. Install prerequisite packages:
+   - `sudo apt install ca-certificates curl gnupg lsb-release`
+3. Add the Docker GPG key and repository.
+4. Install the engine:
+   - `sudo apt install docker-ce docker-ce-cli containerd.io`
+5. Verify:
+   - `sudo systemctl enable --now docker`
+   - `docker --version`
+   - `sudo docker run hello-world`
+
+### 2.5 Running Docker Without sudo
+
+The `docker` group allows users to access the daemon socket:
+
+```bash
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+Security note: anyone in the `docker` group effectively has root access to the
+host, because they can mount host directories and run privileged containers.
+
+### 2.6 Docker Desktop on Windows
+
+- Docker Desktop provides Docker Engine, Docker CLI, Docker Compose, Kubernetes,
+  and a GUI dashboard.
+- It uses Windows Subsystem for Linux 2 (WSL2) as the backend by default.
+- WSL2 gives near-native Linux performance inside Windows.
+- Enable WSL2: `wsl --set-default-version 2`
+- After installing, verify with `docker version` and `docker run hello-world`.
+- Settings in the Docker Desktop tray allow switching between Linux containers
+  and (on some setups) Windows containers.
+
+### 2.7 Docker on macOS
+
+- Docker Desktop for Mac also uses a lightweight Linux VM.
+- Supports both Intel and Apple Silicon chips.
+- The VM resources (CPU, memory, disk) can be tuned in Docker Desktop
+  preferences.
+
+### 2.8 Verifying Installation
+
+Common verification commands:
+
+```bash
+docker version          # client and server version info
+docker info             # detailed system-wide info and metrics
+docker run hello-world  # smoke test that pulls and runs a test image
+docker image ls         # list local images
+docker ps -a            # list all containers (running and stopped)
+```
+
+### 2.9 Docker vs other runtimes
+
+- **containerd**: A production-grade container runtime, can be used standalone
+  with tools like `nerdctl`.
+- **Podman**: A daemonless alternative, compatible with Docker CLI syntax.
+- **CRI-O**: A runtime built specifically for Kubernetes.
+- **Kata Containers**: Run containers inside lightweight VMs for extra isolation.
+- **containerd**: The runtime Kubernetes uses by default through its CRI plugin.
+
+### 2.10 Docker context and configuration
+
+- `/etc/docker/daemon.json` holds daemon configuration (storage driver, debug,
+  insecure registries, log limits).
+- `daemon.json` example for limiting log size:
+
+```json
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+```
+
+- After changing `daemon.json` restart with `sudo systemctl restart docker` or
+  `sudo kill -SIGHUP $(pidof dockerd)`.
+
+### 2.11 Upgrading and removal
+
+- Upgrade: `sudo apt update && sudo apt upgrade docker-ce`
+- Remove completely:
+  - `sudo apt purge docker-ce docker-ce-cli containerd.io`
+  - `sudo rm -rf /var/lib/docker`
+- The `/var/lib/docker` directory contains all images, containers, and volumes.
+  Removing it permanently deletes local data unless off-host backups exist.
+
+### 2.12 Summary
+
+Docker is a client-server platform built on Linux kernel isolation features.
+Installing Docker is straightforward on every major operating system. After
+installation the daemon runs constantly, and the CLI is used to talk to it. This
+foundation supports all the image building and hosting workflows covered next.
