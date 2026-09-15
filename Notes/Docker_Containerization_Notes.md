@@ -171,3 +171,198 @@ docker exec -it app /bin/sh
 ```bash
 docker inspect --format '{{.RepoDigests}}' node:18-alpine
 ```
+
+---
+
+## 5. Containerizing This Project - Step by Step
+
+This section walks through how a typical web application in this project would
+be containerized end to end. The approach works for Node.js, Python, Java, or
+static frontend codebases.
+
+### Step 1 - Understand the application
+
+Before writing anything, answer these questions:
+
+1. What runtime does the app need? (Node 18, Python 3.11, OpenJDK 17, etc.)
+2. What is the start command? (`npm start`, `python app.py`, `java -jar app.jar`)
+3. What port does it listen on? (3000, 5000, 8080, 80)
+4. What are the build steps, if any? (`npm run build`, `mvn package`)
+5. Does it need environment variables or persistent storage?
+6. Does it have to talk to a database, cache, or another service?
+
+### Step 2 - Plan the Dockerfile
+
+The simplest plan is: base image, work directory, install dependencies, copy
+source, define the start command. For production you add a build stage, a
+non-root user, and a `.dockerignore`.
+
+### Step 3 - Plan the container layout
+
+A typical preview of the runtime layout:
+
+```text
+HOST                         CONTAINER
+localhost:3000  ----------->  container:3000   (app)
+localhost:5000  ----------->  container:5000   (api)
+localhost:80    ----------->  container:80     (frontend)
+```
+
+### Step 4 - Build and test locally
+
+```bash
+docker build -t my-app .
+docker run -p 3000:3000 my-app
+curl http://localhost:3000
+```
+
+### Step 5 - Push and deploy
+
+```bash
+docker tag my-app myusername/my-app:1.0.0
+docker push myusername/my-app:1.0.0
+```
+
+---
+
+## 6. Writing the Dockerfile for the Project
+
+### Node.js example
+
+```dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --only=production
+
+COPY . .
+
+ENV NODE_ENV=production
+
+EXPOSE 3000
+
+CMD ["node", "index.js"]
+```
+
+### Python/Flask example
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+```
+
+### Ordering matters for caching
+
+Docker caches each layer. If you copy all of the source code first and then
+run `npm install`, every source change invalidates the dependency layer,
+forcing a slow re-install. Copy the dependency manifests, install, and only
+then copy the source:
+
+```dockerfile
+COPY package*.json ./     # changes rarely
+RUN npm install           # cached until the manifest changes
+COPY . .                  # changes often, never breaks the cache above
+```
+
+### ENTRYPOINT vs CMD
+
+- `CMD` is the default command and can be overridden at run time.
+- `ENTRYPOINT` is the fixed command that always runs; arguments are appended.
+
+```dockerfile
+ENTRYPOINT ["python"]
+CMD ["app.py"]
+```
+
+Now `docker run my-image app.py --host 0.0.0.0` appends arguments to the
+entrypoint, giving great flexibility.
+
+---
+
+## 7. The .dockerignore File
+
+The `.dockerignore` file stops unnecessary files from being copied into the
+image or sent to the daemon's build context. A bloated build context makes
+builds slow and images large.
+
+```text
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+Dockerfile
+.dockerignore
+*.log
+build
+dist
+coverage
+*.md
+```
+
+A good `.dockerignore` also prevents accidentally baking secrets (like `.env`)
+into an image that might later be pushed to a public registry.
+
+---
+
+## 8. Building, Tagging, and Running Images
+
+### Building
+
+```bash
+docker build -t my-app .
+docker build -t my-app -f docker/Dockerfile.prod .
+docker build --no-cache -t my-app .
+```
+
+`--no-cache` forces a full rebuild, bypassing cached layers. This is useful
+when debugging weird layer caching behaviour.
+
+### Running
+
+```bash
+# foreground
+docker run -p 3000:3000 my-app
+
+# detached
+docker run -d -p 3000:3000 my-app
+
+# with a name
+docker run -d --name my-app -p 3000:3000 my-app
+
+# with an environment variable
+docker run -d -e NODE_ENV=production -p 3000:3000 my-app
+
+# with an env file
+docker run -d --env-file .env -p 3000:3000 my-app
+
+# with restart policy
+docker run -d --restart unless-stopped -p 3000:3000 my-app
+```
+
+### Tagging
+
+```bash
+docker tag my-app myusername/my-app:latest
+docker tag my-app myusername/my-app:1.0.0
+```
+
+### Removing unused objects
+
+```bash
+docker image prune
+docker container prune
+docker system prune -a
+```
