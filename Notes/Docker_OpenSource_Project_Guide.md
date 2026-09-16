@@ -621,3 +621,197 @@ docker build \
 
 Labels help users connect an image to its source repository.
 They are not a replacement for a signed release or immutable digest.
+
+## 23. Selecting a Container Registry
+
+Choose a registry that supports the project’s audience and automation needs.
+Docker Hub is familiar to many users and supports public repositories.
+GitHub Container Registry keeps images near GitHub source repositories.
+Cloud registries integrate with cloud identity and deployment services.
+
+Before choosing, check these questions:
+
+1. Can anonymous users pull public images?
+2. Can maintainers protect publishing credentials?
+3. Does the registry support immutable digests?
+4. Are multi-platform manifests supported?
+5. Are retention, bandwidth, and storage limits acceptable?
+6. Can users report vulnerabilities or abuse?
+
+Use a fully qualified image name.
+The general form is `registry/namespace/repository:tag`.
+
+```text
+docker.io/example/project:1.0.0
+ghcr.io/example/project:1.0.0
+registry.example.com/team/project:1.0.0
+```
+
+Pick one canonical name and document it in the README.
+Avoid publishing the same release under confusingly different names.
+
+## 24. Naming and Ownership
+
+The registry namespace should match the project owner where practical.
+An organization namespace is better than an individual namespace for shared work.
+Give the CI identity only the permissions required to push the repository.
+Separate read access from write access when the registry supports it.
+
+Use lowercase repository names and a stable naming convention.
+Do not include a developer’s laptop name in an image repository.
+Do not embed credentials in an image name, build argument, or source file.
+
+## 25. Logging in Safely
+
+A maintainer must authenticate before pushing to a private or public registry.
+Use a short-lived token or an access token with write permission to one repository.
+Avoid using a personal password in automation.
+Never place a token directly in a shell command that is stored in CI logs.
+
+Interactive login example:
+
+```bash
+docker login ghcr.io
+```
+
+For automation, pass a token through the CI secret store.
+The exact command depends on the registry and its authentication method.
+After publishing, log out from shared workstations when appropriate:
+
+```bash
+docker logout ghcr.io
+```
+
+If a token appears in a log, revoke it immediately.
+Treat registry write access as release access.
+
+## 26. Tagging a Release Image
+
+Build or pull the local image, then add the fully qualified release tag.
+
+```bash
+docker build --tag project:1.0.0 .
+docker tag project:1.0.0 ghcr.io/example/project:1.0.0
+docker tag project:1.0.0 ghcr.io/example/project:stable
+```
+
+Use a semantic version when the project follows semantic versioning.
+The patch number should represent backwards-compatible fixes.
+The minor number can represent backwards-compatible features.
+The major number should signal incompatible public changes.
+
+A release can also have a commit tag:
+
+```bash
+docker tag project:1.0.0 ghcr.io/example/project:git-$(git rev-parse --short HEAD)
+```
+
+Only create a moving tag such as `stable` after the immutable version tag exists.
+Do not make `latest` point to a development build unless that is explicit.
+
+## 27. Pushing an Image
+
+Push each immutable version tag first.
+
+```bash
+docker push ghcr.io/example/project:1.0.0
+```
+
+Then push a channel tag only if the project uses one:
+
+```bash
+docker push ghcr.io/example/project:stable
+```
+
+The registry stores image layers and a manifest.
+Layers already present in the registry do not need to upload again.
+The command should finish with a digest.
+Save that digest in release notes or deployment configuration.
+
+```text
+digest: sha256:0123456789abcdef...
+```
+
+A successful local build does not prove that the push succeeded.
+Check the registry’s package page and pull the image from a clean environment.
+
+## 28. How Anyone Downloads the Image
+
+For a public image, a user usually needs no registry login.
+The user copies the documented image name and pulls the desired tag.
+
+```bash
+docker pull ghcr.io/example/project:1.0.0
+```
+
+The user can run the downloaded image:
+
+```bash
+docker run --rm --publish 8080:8000 \
+  ghcr.io/example/project:1.0.0
+```
+
+A user can inspect the local copy:
+
+```bash
+docker image ls ghcr.io/example/project
+docker image inspect ghcr.io/example/project:1.0.0
+```
+
+For maximum reproducibility, the user can pull by digest:
+
+```bash
+docker pull ghcr.io/example/project@sha256:0123456789abcdef...
+```
+
+Explain required volumes, ports, environment variables, and startup commands.
+The download command alone is not enough if the application needs configuration.
+
+## 29. Public Package Settings
+
+Some registries create a package as private by default.
+Change visibility through the registry settings after reviewing the implications.
+Confirm that the package is publicly pullable from a clean account or environment.
+Do not publish test images containing customer data or internal endpoints.
+
+Link the container package to the source repository when the registry supports it.
+Add a package description that points back to the project documentation.
+Show the supported architectures and release policy.
+Explain how users can report image-specific vulnerabilities.
+
+## 30. Multi-Platform Images
+
+Different users may run Linux on AMD64, ARM64, or another architecture.
+Build a manifest containing a compatible image for each supported platform.
+Docker Buildx is commonly used for this workflow.
+
+```bash
+docker buildx create --name project-builder --use
+docker buildx inspect --bootstrap
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --tag ghcr.io/example/project:1.0.0 \
+  --push .
+```
+
+The registry receives a multi-platform manifest under one tag.
+Docker selects the matching platform during `docker pull`.
+Test each architecture rather than assuming a successful build is sufficient.
+Native runners are often simpler for architecture-specific integration tests.
+
+## 31. Release Checklist
+
+Before pushing a public image, confirm the following:
+
+- The source tests pass on the release commit.
+- The Dockerfile uses the intended base image.
+- The image starts with the documented command.
+- The health endpoint returns the expected status.
+- No secrets or private source files are in the image.
+- The image runs as a non-root user when possible.
+- The image has a version-specific tag.
+- The registry repository has the intended visibility.
+- The release notes include the image name and digest.
+- A clean-environment pull and run test passes.
+
+This checklist belongs in the release process, not only in a maintainer’s memory.
