@@ -431,3 +431,193 @@ If the runtime image does not include `wget`, use the application’s own check.
 Document what a healthy response means.
 Do not use a health check that changes data.
 Use separate readiness and liveness concepts when the deployment platform allows.
+
+## 16. Docker Compose for Development
+
+Use Compose when the project needs more than one service locally.
+Compose describes services, networks, volumes, ports, and environment values.
+Keep the file focused on development defaults.
+Production deployments may require a separate platform-specific definition.
+
+```yaml
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8000"
+    environment:
+      DATABASE_URL: postgres://app:app@db:5432/app
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    volumes:
+      - database-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  database-data:
+```
+
+The service name `db` becomes a network hostname for the `app` service.
+Containers should connect to the container port, not the published host port.
+`depends_on` controls startup ordering and does not prove an application is ready.
+Use a health check when readiness affects startup behavior.
+
+Useful Compose commands are:
+
+```bash
+docker compose config
+docker compose up --build
+docker compose ps
+docker compose logs --follow app
+docker compose down
+docker compose down --volumes
+```
+
+The `--volumes` option deletes named data volumes.
+Use it only when resetting local state is intentional.
+
+## 17. Volumes and Bind Mounts
+
+Named volumes are managed by Docker and are suitable for database data.
+Bind mounts map a host path into a container and are useful for source editing.
+Bind mounts can create permission differences between host and container users.
+They can also expose more host files than intended if the path is broad.
+
+Development source mount example:
+
+```yaml
+services:
+  app:
+    build: .
+    volumes:
+      - ./src:/app/src:ro
+```
+
+Use read-only mounts when the service does not need to write.
+Do not store important production data only in a disposable container layer.
+Back up databases using database-aware tools and verify restoration regularly.
+
+## 18. Networks
+
+Docker networks provide names and connectivity between selected containers.
+Create separate networks when public and private traffic should be isolated.
+Only publish ports that must be reachable from the host or external network.
+An internal database usually needs no published port in a Compose file.
+
+```yaml
+services:
+  app:
+    networks:
+      - public
+      - private
+  db:
+    networks:
+      - private
+
+networks:
+  public:
+  private:
+    internal: true
+```
+
+Network isolation is one part of defense in depth.
+The application still needs authentication and authorization.
+Do not assume that a container network boundary replaces application controls.
+
+## 19. Continuous Integration
+
+Continuous integration should build the project from a clean checkout.
+It should run unit tests before spending time on a release image.
+It should build the image using the same Dockerfile used by maintainers.
+It should run a smoke test against a temporary container.
+It should fail clearly when linting, tests, or image checks fail.
+
+A minimal workflow can contain these stages:
+
+1. Check out the requested commit.
+2. Install or cache language dependencies.
+3. Run formatting and static analysis.
+4. Run unit and integration tests.
+5. Build the Docker image with a commit-specific tag.
+6. Start the image and call its health endpoint.
+7. Scan the image and publish results.
+
+Do not publish an image from an unreviewed pull request.
+Pull request workflows can build images without pushing them.
+Release workflows can push only after branch and review protections pass.
+
+## 20. Example CI Smoke Test
+
+The exact CI syntax depends on the hosting platform.
+The commands themselves can be shared across platforms:
+
+```bash
+set -eu
+
+docker build --tag project:ci-${GITHUB_SHA:-local} .
+docker run --detach --name project-ci \
+  --publish 18080:8000 \
+  project:ci-${GITHUB_SHA:-local}
+
+cleanup() {
+  docker logs project-ci || true
+  docker rm --force project-ci || true
+}
+trap cleanup EXIT
+
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if curl --fail --silent http://127.0.0.1:18080/health; then
+    exit 0
+  fi
+  sleep 2
+done
+
+exit 1
+```
+
+Keep cleanup in a trap so failed tests do not leave containers on the runner.
+Use a unique port or an isolated network when jobs run concurrently.
+Do not make a test depend on an image tag that another job can overwrite.
+
+## 21. Testing the Application Contract
+
+Test the command shown in the README, not only an internal implementation.
+Verify that the documented port is actually reachable.
+Verify that required environment variables produce a useful error when absent.
+Verify that a graceful termination signal lets the application shut down.
+Verify that the container exits nonzero when startup fails.
+
+Include a small smoke test for every supported image architecture.
+Use integration tests for database migrations and external service boundaries.
+Keep test fixtures deterministic and avoid production data.
+
+## 22. Reproducible Builds
+
+Reproducible builds aim to produce equivalent artifacts from the same inputs.
+Commit dependency lockfiles and use a declared build context.
+Pin action versions and important base image versions in CI.
+Record the source revision and build timestamp as metadata when useful.
+Avoid embedding secrets, local paths, and machine-specific values.
+
+BuildKit supports labels and metadata for traceability:
+
+```bash
+docker build \
+  --label org.opencontainers.image.source=https://github.com/example/project \
+  --label org.opencontainers.image.revision=$(git rev-parse HEAD) \
+  --tag project:traceable .
+```
+
+Labels help users connect an image to its source repository.
+They are not a replacement for a signed release or immutable digest.
