@@ -815,3 +815,244 @@ Before pushing a public image, confirm the following:
 - A clean-environment pull and run test passes.
 
 This checklist belongs in the release process, not only in a maintainer’s memory.
+
+## 32. Container Security Basics
+
+Run as a non-root user whenever the application supports it.
+Use a fixed numeric user when the runtime image has no user database.
+Drop Linux capabilities that the application does not need.
+Use a read-only root filesystem when the application can support it.
+Mount a specific writable directory for required temporary data.
+
+Example runtime restrictions:
+
+```bash
+docker run --rm \
+  --read-only \
+  --cap-drop=ALL \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --publish 8080:8000 \
+  ghcr.io/example/project:1.0.0
+```
+
+Test these restrictions before documenting them as required.
+Some libraries need a writable cache or a specific capability.
+Grant only the exception that the application needs and document the reason.
+
+## 33. Secrets and Sensitive Data
+
+Do not store secrets in a Dockerfile, image layer, or public repository.
+Do not pass a secret through `ARG` because it can appear in build metadata.
+Use BuildKit secret mounts for private dependency downloads during a build.
+Use the deployment platform’s secret manager at runtime.
+
+A secret should be easy to rotate without rebuilding the image.
+Keep sample configuration values obviously fake.
+Redact tokens, cookies, and authorization headers from issue reports.
+Treat crash dumps and logs as potentially sensitive data.
+
+## 34. Scanning Images
+
+Scan the image for operating system and language dependency vulnerabilities.
+Run a scanner in CI and before a release.
+Review severity, exploitability, reachability, and available fixes together.
+Do not ignore a finding only because the scanner output is inconvenient.
+
+Example commands depend on the selected scanner:
+
+```bash
+docker scout cves project:local
+docker scout recommendations project:local
+```
+
+Keep a record of the scanner, database date, image digest, and result.
+False positives should be documented with an owner and review date.
+Update the base image and lockfiles when fixes are available.
+
+## 35. Signing and Provenance
+
+Image signatures help users verify who released an artifact.
+Build provenance helps connect an artifact to its source and workflow.
+Use the signing and attestation features supported by the chosen registry.
+Protect signing keys with a dedicated secret-management system.
+Never store a private signing key in the repository.
+
+Verification instructions must be part of the release documentation.
+Users should know which identity is trusted and what a failed verification means.
+Do not claim that an unsigned image is verified simply because it has a tag.
+
+## 36. Updating Dependencies
+
+Dependency maintenance is part of owning a public image.
+Schedule updates for the base image, operating system packages, and libraries.
+Run tests after each update rather than batching unknown changes indefinitely.
+Review release notes for breaking changes and deprecations.
+Publish a patched image when a relevant vulnerability is fixed.
+
+Keep old tags available when the project’s support policy requires them.
+Do not silently rebuild an old immutable version tag with different contents.
+Use a new patch version for a changed artifact.
+Document the support window for each major release.
+
+## 37. Image Size and Performance
+
+Measure image size instead of optimizing it by guesswork.
+
+```bash
+docker image ls ghcr.io/example/project
+docker history --no-trunc ghcr.io/example/project:1.0.0
+```
+
+Use multi-stage builds and a precise `.dockerignore`.
+Remove package-manager caches when the package manager leaves them behind.
+Avoid copying test fixtures, documentation archives, and build outputs into runtime.
+Do not sacrifice required certificates or debugging capability without a plan.
+
+Startup time depends on application initialization as well as image download size.
+Measure cold start and warm start behavior on representative machines.
+
+## 38. Community Contribution Rules
+
+A CONTRIBUTING file should explain how to prepare a local environment.
+It should state the required Docker version and the commands for tests.
+It should explain how to build the image without pushing it.
+It should describe the branch, review, and release process.
+It should ask contributors to update documentation when behavior changes.
+
+Maintainers should use issue templates for bug reports and feature requests.
+A bug template can ask for the image tag, digest, host platform, and logs.
+Never ask reporters to paste credentials or private configuration.
+
+A code of conduct sets expectations for respectful collaboration.
+Moderation procedures should identify a private contact path.
+Open source does not mean maintainers must accept unsafe or abusive behavior.
+
+## 39. Issue Triage
+
+Reproduce a container issue using the exact image tag or digest reported.
+Separate an application bug from a host, network, registry, or configuration issue.
+Ask for the output of safe diagnostic commands.
+
+```bash
+docker version
+docker info
+docker image inspect ghcr.io/example/project:1.0.0
+docker logs project-local
+```
+
+Record the operating system and CPU architecture.
+Check whether the user pulled a stale local tag.
+Ask the user to compare the local image digest with the release digest.
+Close duplicate reports with a link to the canonical issue.
+
+## 40. Troubleshooting Pull Failures
+
+If a pull fails, first check the image name and tag spelling.
+Then check registry visibility and whether authentication is required.
+Check network policy, proxy settings, and certificate trust.
+Check whether the requested platform exists in the manifest.
+
+Useful commands include:
+
+```bash
+docker manifest inspect ghcr.io/example/project:1.0.0
+docker pull --platform linux/amd64 ghcr.io/example/project:1.0.0
+docker system df
+```
+
+A `manifest unknown` error usually means the tag does not exist.
+An authorization error usually means visibility or credentials are wrong.
+An architecture error usually means the image lacks the requested platform.
+Do not tell users to disable TLS verification as a routine workaround.
+
+## 41. Troubleshooting Runtime Failures
+
+Check the container exit code and logs first.
+
+```bash
+docker ps --all
+docker inspect --format '{{.State.ExitCode}}' project-local
+docker logs --timestamps project-local
+```
+
+If the process exits immediately, verify the command and working directory.
+If the port is unreachable, verify both the application bind address and mapping.
+If a file is missing, check the image contents and the selected build stage.
+If permissions fail, inspect the runtime user and mounted directory ownership.
+If the health check fails, run its command manually inside a diagnostic container.
+
+## 42. Release Runbook
+
+Use this sequence for a normal public release:
+
+1. Merge reviewed changes into the release branch.
+2. Update the changelog and version metadata.
+3. Run unit, integration, and documentation checks.
+4. Build the image with the release version tag.
+5. Run the image locally and execute the smoke test.
+6. Scan the image and review actionable findings.
+7. Sign the image or attach provenance when configured.
+8. Log in using a narrowly scoped publishing token.
+9. Push the immutable version tag.
+10. Verify the remote digest from a clean environment.
+11. Publish a channel tag only after verification.
+12. Update the README and release notes with pull commands.
+13. Announce breaking changes and migration instructions.
+
+Keep a record of the source commit, image digest, scanner result, and release date.
+This record makes incident response and rollback much faster.
+
+## 43. Rollback Planning
+
+Every release should have a known previous working image.
+Deploy by digest when the platform supports it.
+If a release fails, change the deployment reference to the previous digest.
+Do not delete the previous image before confirming rollback is unnecessary.
+
+After rollback, preserve logs and open an incident or issue.
+Explain whether the problem was in application code, packaging, or infrastructure.
+Fix the source and publish a new patch version instead of silently replacing a tag.
+
+## 44. Quick Reference
+
+Build locally:
+
+```bash
+docker build --tag project:local .
+```
+
+Run locally:
+
+```bash
+docker run --rm --publish 8080:8000 project:local
+```
+
+Tag for a registry:
+
+```bash
+docker tag project:local ghcr.io/example/project:1.0.0
+```
+
+Push for public download:
+
+```bash
+docker push ghcr.io/example/project:1.0.0
+```
+
+Download as a user:
+
+```bash
+docker pull ghcr.io/example/project:1.0.0
+```
+
+Run the published image:
+
+```bash
+docker run --rm --publish 8080:8000 \
+  ghcr.io/example/project:1.0.0
+```
+
+The central promise is simple: source, build instructions, tests, and published
+artifacts should tell the same story. When they do, contributors can participate,
+maintainers can release safely, and users can download and run the project with
+confidence.
