@@ -222,3 +222,212 @@ Use a builder image separately when compilation tools are not needed at runtime.
 Avoid using `latest` as the only base image reference.
 Record why a particular base image was selected.
 Plan a regular update process for the base image and system packages.
+
+## 9. Creating the Dockerfile
+
+Start a Dockerfile with the smallest complete runtime description.
+The `FROM` instruction selects the starting filesystem and runtime.
+The `WORKDIR` instruction sets the default directory for later instructions.
+The `COPY` instruction adds files from the build context to the image.
+The `RUN` instruction executes a command during the build.
+The `ENV` instruction defines a default environment value.
+The `EXPOSE` instruction documents a listening port; it does not publish it.
+The `USER` instruction selects the account used by the running process.
+The `ENTRYPOINT` and `CMD` instructions define the default process.
+
+Here is a simple Python service example:
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+
+EXPOSE 8000
+USER 10001
+CMD ["python", "-m", "src.server"]
+```
+
+Use JSON array syntax for executable commands when possible.
+It avoids an extra shell process and handles signals more predictably.
+The application should run in the foreground so Docker can track its process.
+Do not start a background daemon and then exit the main process.
+
+## 10. Build Context and `.dockerignore`
+
+The final argument to `docker build` is the build context.
+Docker sends files from that context to the builder.
+An unnecessarily large context slows down builds and may leak private files.
+Keep the context at the repository root only when the Dockerfile needs it.
+
+Create a `.dockerignore` file next to the Dockerfile:
+
+```text
+.git
+.github
+.env
+.env.*
+node_modules
+__pycache__
+*.pyc
+coverage
+dist
+build
+.venv
+*.log
+```
+
+Review ignore patterns before publishing a project.
+Do not rely on `.gitignore` to control Docker build context.
+The two files serve different tools and often need different entries.
+Never copy cloud credentials or local SSH configuration into an image.
+
+## 11. Layer Ordering and Build Cache
+
+Docker can reuse a layer when its instruction and inputs have not changed.
+Put stable dependency metadata before frequently changing source files.
+For example, copy `package-lock.json` before copying application source.
+This lets dependency installation remain cached during source-only changes.
+
+An efficient Node.js layout might look like this:
+
+```dockerfile
+FROM node:22-alpine
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY . .
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+Use lockfiles so dependency resolution is repeatable.
+Use `npm ci`, `pip install` with a locked requirements file, or the equivalent
+reproducible installer for the project language.
+Avoid placing timestamps or random values in build instructions.
+Those values make cache reuse unreliable.
+
+Build with a clear tag:
+
+```bash
+docker build --tag project:local .
+docker image inspect project:local
+```
+
+The tag `local` communicates that this image is for local verification.
+Do not push a local experiment under a release tag.
+
+## 12. Multi-Stage Builds
+
+A multi-stage build separates compilation tools from the runtime image.
+The first stage can contain compilers, package managers, and development headers.
+The final stage copies only the artifacts required to run the application.
+
+```dockerfile
+FROM golang:1.23 AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/project ./cmd/project
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=builder /out/project /project
+USER 65532:65532
+ENTRYPOINT ["/project"]
+```
+
+Multi-stage builds reduce runtime size and remove build-only tools.
+They do not remove vulnerabilities in the application or copied libraries.
+Check that the final stage contains certificates if HTTPS calls are required.
+Check that the selected user can read files and bind to the chosen port.
+
+## 13. Build Arguments and Environment Variables
+
+Build arguments are available during image construction.
+Runtime environment variables are supplied when a container starts.
+Do not put secrets in either mechanism.
+Build arguments can appear in build history and cached layers.
+
+```dockerfile
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
+```
+
+Pass a non-secret build value when needed:
+
+```bash
+docker build --build-arg APP_VERSION=1.0.0 \
+  --tag project:1.0.0 .
+```
+
+Supply runtime configuration separately:
+
+```bash
+docker run --rm \
+  --env APP_MODE=production \
+  --env-file .env.example \
+  project:local
+```
+
+Keep `.env.example` free of real credentials.
+Document the meaning, format, and default for every supported variable.
+
+## 14. Running Locally
+
+Start a container with a stable name while testing interactively.
+
+```bash
+docker run --name project-local \
+  --publish 8080:8000 \
+  --env APP_MODE=development \
+  project:local
+```
+
+The left side of `8080:8000` is the host port.
+The right side is the port inside the container.
+The application must listen on an address reachable from the container network.
+For a web service, listening on `0.0.0.0` is commonly required.
+
+Inspect logs from another terminal:
+
+```bash
+docker logs --follow project-local
+docker inspect project-local
+docker port project-local
+```
+
+Stop and remove the container after testing:
+
+```bash
+docker stop project-local
+docker rm project-local
+```
+
+Use `docker exec` for short diagnostic commands inside a running container.
+Do not treat manual changes made with `docker exec` as permanent configuration.
+They disappear when the container is replaced.
+
+## 15. Health Checks
+
+A health check gives an orchestrator a simple signal about service readiness.
+It should test a meaningful local endpoint or command.
+It should be fast, deterministic, and safe to repeat.
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8000/health \
+  || exit 1
+```
+
+If the runtime image does not include `wget`, use the application’s own check.
+Document what a healthy response means.
+Do not use a health check that changes data.
+Use separate readiness and liveness concepts when the deployment platform allows.
